@@ -1,0 +1,70 @@
+// MedScribe 数据库 schema
+// 文档：https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// ── 用户 ───────────────────────────────────────────────
+// 邮箱 + 密码认证的核心表。密码永远只存 bcrypt 哈希值，绝不存明文。
+model User {
+  id             String    @id @default(cuid())
+  email          String    @unique
+  name           String?
+  hashedPassword String? // 邮箱密码登录用；OAuth 用户没有密码，故可空
+  emailVerified  DateTime?
+  image          String?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  accounts Account[]
+  sessions Session[]
+}
+
+// ── 以下是 Auth.js (NextAuth) 标准模型 ──────────────────
+// 现在用邮箱密码 + JWT，暂时用不到 Session 表，但保留全套
+// 以便将来加 OAuth（Google/GitHub 登录）时零改动。
+
+// 第三方登录账号（一个 User 可绑定多个，如同时绑 Google 和 GitHub）
+model Account {
+  id                String  @id @default(cuid())
+  userId            String
+  type              String
+  provider          String
+  providerAccountId String
+  refresh_token     String?
+  access_token      String?
+  expires_at        Int?
+  token_type        String?
+  scope             String?
+  id_token          String?
+  session_state     String?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerAccountId])
+}
+
+// 数据库会话（database session 策略时用；我们用 JWT，故暂不写入）
+model Session {
+  id           String   @id @default(cuid())
+  sessionToken String   @unique
+  userId       String
+  expires      DateTime
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+// 邮箱验证 / 找回密码用的一次性 token
+model VerificationToken {
+  identifier String
+  token      String
+  expires    DateTime
+
+  @@unique([identifier, token])
+}
