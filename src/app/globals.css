@@ -12,12 +12,7 @@
   --font-mono: var(--font-geist-mono);
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
-}
+/* 统一用亮色主题（白底深字）：页面组件按白底设计，故不跟随系统暗色。 */
 
 body {
   background: var(--background);

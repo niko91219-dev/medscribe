@@ -20,6 +20,13 @@ export default async function DashboardPage() {
         <p className="text-sm text-black/40">用户 ID：{session.user.id}</p>
       </div>
 
+      <a
+        href="/records/new"
+        className="rounded-md bg-black px-4 py-2 text-sm text-white"
+      >
+        + 新建病历（AI 整理）
+      </a>
+
       {/* 退出登录用 server action：在服务端调用 signOut 并重定向 */}
       <form
         action={async () => {

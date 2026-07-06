@@ -11,10 +11,13 @@ export const authConfig = {
     // middleware 每次请求都会调用它来决定放行还是拦截
     authorized({ auth, request: { nextUrl } }) {
       const isLoggedIn = !!auth?.user;
-      const isOnDashboard = nextUrl.pathname.startsWith("/dashboard");
+      // 受保护区：/dashboard 和 /records 都要登录
+      const isProtected =
+        nextUrl.pathname.startsWith("/dashboard") ||
+        nextUrl.pathname.startsWith("/records");
 
-      if (isOnDashboard) {
-        // 受保护区：登录才放行；没登录返回 false → Auth.js 自动重定向到上面的 signIn 页
+      if (isProtected) {
+        // 登录才放行；没登录返回 false → Auth.js 自动重定向到上面的 signIn 页
         return isLoggedIn;
       }
       return true; // 其余页面公开

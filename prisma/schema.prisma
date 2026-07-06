@@ -24,6 +24,25 @@ model User {
 
   accounts Account[]
   sessions Session[]
+  records  Record[]
+}
+
+// ── 病历记录 ─────────────────────────────────────────────
+// 一条 SOAP 病历：原始输入 + AI 整理后的四段。挂在某个用户名下。
+model Record {
+  id         String   @id @default(cuid())
+  userId     String
+  rawText    String // 医生输入的原始问诊记录
+  subjective String // S 主观：患者主诉
+  objective  String // O 客观：体征、检查结果
+  assessment String // A 评估：诊断/判断
+  plan       String // P 计划：治疗方案
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId]) // 按用户查记录很频繁，加索引
 }
 
 // ── 以下是 Auth.js (NextAuth) 标准模型 ──────────────────
