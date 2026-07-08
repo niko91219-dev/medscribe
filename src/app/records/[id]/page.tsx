@@ -2,6 +2,8 @@ import Link from "next/link";
 import { notFound, redirect } from "next/navigation";
 import { auth } from "@/auth";
 import { prisma } from "@/lib/prisma";
+import type { IcdList } from "@/lib/icd";
+import IcdSection from "./IcdSection";
 
 // Next.js 16：动态路由的 params 是 Promise，要 await。
 export default async function RecordDetailPage({
@@ -52,7 +54,13 @@ export default async function RecordDetailPage({
         ))}
       </section>
 
-      <details className="mt-4">
+      {/* icd 存在 Json 列里，读出来是 JsonValue；我们存的就是 IcdList，安全地断言类型 */}
+      <IcdSection
+        recordId={record.id}
+        initialIcd={(record.icd as IcdList | null) ?? null}
+      />
+
+      <details className="mt-6">
         <summary className="cursor-pointer text-sm text-black/50">
           查看原始记录
         </summary>

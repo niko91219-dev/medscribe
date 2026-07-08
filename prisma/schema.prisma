@@ -37,6 +37,7 @@ model Record {
   objective  String // O 客观：体征、检查结果
   assessment String // A 评估：诊断/判断
   plan       String // P 计划：治疗方案
+  icd        Json? // AI 推荐的 ICD 编码列表 [{code,title,reason}]；按需生成，故可空
   createdAt  DateTime @default(now())
   updatedAt  DateTime @updatedAt
 
