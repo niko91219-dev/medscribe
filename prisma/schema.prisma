@@ -80,6 +80,14 @@ model Session {
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 }
 
+// ── ICD-10 权威码表（参考表 / lookup table）─────────────
+// 用来给 AI"接地"：模型只能从这张表里选编码，从源头杜绝幻觉。
+// 演示用常见病子集，靠 seed 脚本灌入；生产可换成官方全量码表，代码不变。
+model IcdCode {
+  code  String @id // ICD-10 编码，本身就是主键
+  title String // 官方疾病名称
+}
+
 // 邮箱验证 / 找回密码用的一次性 token
 model VerificationToken {
   identifier String

@@ -7,6 +7,7 @@ export default defineConfig({
   schema: "prisma/schema.prisma",
   migrations: {
     path: "prisma/migrations",
+    seed: "tsx prisma/seed.ts", // `prisma db seed` 会跑这个
   },
   datasource: {
     // CLI（migrate / introspect）走直连，避开连接池对 DDL 加锁的干扰

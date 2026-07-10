@@ -25,13 +25,21 @@ export async function POST(
       return NextResponse.json({ error: "病历不存在" }, { status: 404 });
     }
 
-    // 根据这条病历的 SOAP 生成 ICD 推荐
-    const icd = await generateIcd({
-      subjective: record.subjective,
-      objective: record.objective,
-      assessment: record.assessment,
-      plan: record.plan,
+    // 先从数据库查出权威码表，喂给模型做 grounding（只准从表里选）
+    const catalog = await prisma.icdCode.findMany({
+      select: { code: true, title: true },
     });
+
+    // 根据这条病历的 SOAP + 码表生成 ICD 推荐
+    const icd = await generateIcd(
+      {
+        subjective: record.subjective,
+        objective: record.objective,
+        assessment: record.assessment,
+        plan: record.plan,
+      },
+      catalog,
+    );
 
     // 存回该记录的 icd 字段（已确认归属，按 id 更新即可）
     await prisma.record.update({

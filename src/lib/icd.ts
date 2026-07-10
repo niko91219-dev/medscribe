@@ -2,34 +2,37 @@ import { z } from "zod";
 import { llm, LLM_MODEL } from "@/lib/llm";
 import type { Soap } from "@/lib/soap";
 
-// 单条 ICD 推荐：编码 + 名称 + 推荐理由
-export const icdSuggestionSchema = z.object({
-  code: z.string(), // 如 J06.9
-  title: z.string(), // 该编码对应的疾病名
-  reason: z.string(), // 为什么根据这份病历推荐它
-});
-export type IcdSuggestion = z.infer<typeof icdSuggestionSchema>;
+// 存进 Record.icd / 展示用的结构
+export type IcdSuggestion = { code: string; title: string; reason: string };
 export type IcdList = IcdSuggestion[];
 
-// ⚠️ 小坑：JSON 模式要求顶层是一个「对象」，不能直接是数组。
-// 所以让模型返回 { "codes": [...] } 包一层，我们再取 .codes。
-const icdResponseSchema = z.object({
-  codes: z.array(icdSuggestionSchema),
+// 码表条目（从数据库 IcdCode 表查出来传进来）
+export type IcdCatalogEntry = { code: string; title: string };
+
+// 模型只需返回 code + reason —— title 我们用码表里的【官方名称】，不信模型给的。
+const modelResponseSchema = z.object({
+  codes: z.array(z.object({ code: z.string(), reason: z.string() })),
 });
 
-const SYSTEM_PROMPT = `你是一名熟悉 ICD-10 编码的医疗编码助手。
-用户会给你一份 SOAP 病历（重点看"评估/诊断"部分）。
-请推荐最相关的 ICD-10 编码（1 到 5 个，按相关度从高到低排序）。
+function buildSystemPrompt(catalog: IcdCatalogEntry[]): string {
+  const list = catalog.map((c) => `${c.code} ${c.title}`).join("\n");
+  return `你是一名 ICD-10 编码助手。用户会给你一份 SOAP 病历。
+请从下面这份【ICD-10 编码表】里，挑出与病历最相关的编码（1 到 5 个，按相关度从高到低排序）。
 
-只返回一个 JSON 对象，格式严格为：
-{"codes": [{"code": "J06.9", "title": "急性上呼吸道感染", "reason": "……"}]}
-- code：ICD-10 编码
-- title：该编码对应的中文疾病名称
-- reason：为什么根据这份病历推荐它（简短中文）
-如果病历信息不足以给出编码，codes 返回空数组 []。`;
+【ICD-10 编码表】
+${list}
 
-// 根据 SOAP 病历推荐 ICD-10 编码列表。
-export async function generateIcd(soap: Soap): Promise<IcdList> {
+严格要求：
+- code 只能从上表中选，【绝对不能】编造表中没有的编码。
+- 只返回一个 JSON 对象：{"codes": [{"code": "J06.9", "reason": "简短中文理由"}]}
+- 若表中没有合适编码，codes 返回空数组 []。`;
+}
+
+// grounding：把权威码表喂给模型，约束它只能从表里选，从源头杜绝幻觉。
+export async function generateIcd(
+  soap: Soap,
+  catalog: IcdCatalogEntry[],
+): Promise<IcdList> {
   const userContent = `主观：${soap.subjective}
 客观：${soap.objective}
 评估：${soap.assessment}
@@ -39,7 +42,7 @@ export async function generateIcd(soap: Soap): Promise<IcdList> {
     model: LLM_MODEL,
     response_format: { type: "json_object" },
     messages: [
-      { role: "system", content: SYSTEM_PROMPT },
+      { role: "system", content: buildSystemPrompt(catalog) },
       { role: "user", content: userContent },
     ],
   });
@@ -49,6 +52,16 @@ export async function generateIcd(soap: Soap): Promise<IcdList> {
     throw new Error("LLM 返回了空内容");
   }
 
-  // 同样的双校验，取出 codes 数组
-  return icdResponseSchema.parse(JSON.parse(content)).codes;
+  const { codes } = modelResponseSchema.parse(JSON.parse(content));
+
+  // 二次校验（防御纵深）：即使 prompt 里要求"只从表里选"，模型仍可能违规。
+  // 用码表做权威过滤——只保留表里真实存在的 code，并用【官方 title】覆盖模型说法。
+  const titleByCode = new Map(catalog.map((c) => [c.code, c.title]));
+  return codes
+    .filter((c) => titleByCode.has(c.code))
+    .map((c) => ({
+      code: c.code,
+      title: titleByCode.get(c.code)!,
+      reason: c.reason,
+    }));
 }
