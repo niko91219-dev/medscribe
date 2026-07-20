@@ -317,3 +317,50 @@ cookie 特性：浏览器对同域请求**自动带上**。方便，但开了口
 **Q4（seed 相关）：seed 脚本为什么用 `upsert` 不用 `create`？**
 > `upsert`=有则更新无则创建，保证脚本**幂等**——重复跑不会插重复、不会主键冲突报错。种子/初始化脚本必须幂等。
 
+## 八、RAG 落地（pgvector 语义检索）
+
+把第 8 节的"演进方向"真正实现：ICD 的 grounding 从"全表塞 prompt"升级成 **RAG（先检索 top-K 相关候选再喂模型）**。关键文件：`prisma/schema.prisma`（embedding 列）、迁移 SQL、`src/lib/embedding.ts`（本地模型）、`prisma/embed-icd.ts`（离线灌向量）、`src/lib/icd.ts`（`searchIcdCandidates`）、`route.ts`（换检索）、`next.config.ts`（外部包）。
+
+### 1. RAG 是什么 / 两条线
+- **RAG = 检索(Retrieval) + 生成(Generation)**：先从知识库捞出与问题最相关的一小撮，只把这撮喂给模型。本质=**把知识从模型参数里搬到可控的外部检索**，需要哪条查哪条。
+- **离线建索引**：把 76 条码表 title 提前算成向量存库（`embed-icd.ts`，只做一次）。
+- **在线检索**：每次生成把病历诊断也算向量，去库里比距离取 top-20，只喂这 20 条。
+
+### 2. Embedding（把文字变向量）
+- **一句话**：文字→一串数字（向量），**意思相近→向量相近**（类比地图坐标，坐标近=位置近）。
+- 让"语义比较"变成"算向量距离"——计算机不懂意思，但会算距离，embedding 是那层翻译。
+- 真实维度几百~几千（我们用 512）。距离常用**余弦相似度**（0~1，越接近 1 越像）。
+- **embedding 模型 ≠ 聊天模型**：聊天 text→text（生成，`chat.completions`）；embedding text→向量（表示，`feature-extraction`/`embeddings`），不产文字。RAG 里 embedding 管"检索"、聊天模型管"生成"。
+
+### 3. 为什么 pgvector 不上专用向量库
+- 向量存现有 Neon Postgres 的 **pgvector** 扩展（`CREATE EXTENSION vector`），不引入 Pinecone/Weaviate。
+- **判断**：数据量没到那个量级时，独立向量库=多一套运维+账单+数据两地同步。够用、简单、可演进。**按规模选型，不堆时髦技术。**
+
+### 4. Prisma + vector 的坑
+- Prisma 无原生 vector 类型 → schema 用 `Unsupported("vector(512)")?` 占位 → **连带后果：这列不能用 findMany 读写，必须走原生 SQL**（`$queryRaw`/`$executeRaw`）。
+- 迁移要**手加** `CREATE EXTENSION IF NOT EXISTS vector`（Prisma 只会 ADD COLUMN，不知道要先开扩展）。
+- 写入：传字符串 `'[0.1,...]'` + `::vector` 强转。读时**不 select 向量列**（读回要 `::text` 否则乱值，我们只要 code/title 直接绕开）。
+
+### 5. 向量检索 SQL = 最近邻(KNN)
+- `ORDER BY embedding <=> $query::vector LIMIT k`。`<=>` = pgvector 余弦距离；升序=最相近在前。
+- **索引加速**：`USING hnsw (embedding vector_cosine_ops)` = ANN（近似最近邻），用一点精度(recall)换数量级速度。76 条用不到，数据大才需要——**知道"何时需要索引"比"会建"更重要**。
+
+### 6. 工程坑（真实踩到）
+- **`serverExternalPackages: ["@huggingface/transformers"]`**：本地模型底层 `onnxruntime-node` 是原生模块(.node)，打包器打不了，必须声明外部包，否则运行时找不到模块。
+- **冷启动 8.2s**：首次请求才把模型加载进进程（懒加载单例）。生产解法=启动时预热 warm-up，或独立 embedding 服务。
+- **懒加载单例**：模型加载贵，用模块级变量存 Promise 只加载一次（同 `prisma.ts` 单例思想：昂贵资源全局复用）。
+
+## 九、模拟面试满分答法（RAG 这条线）
+> 点按钮 → 诊断文本 embed(本地模型) → pgvector 比距离取 top-20 → 喂 generateIcd(grounding+白名单防线不变) → 存库 → 渲染。
+
+**Q1：喂 20 条相关的比喂 76 条全部，为什么模型选得更准？（不谈省钱，只谈质量）**
+> 无关信息是**噪声**。76 条里 70 多条跟这份病历无关，模型要先从噪声里找相关项，**注意力被稀释、被干扰，选错概率高**。RAG 先检索把**信噪比**拉高，模型在干净小集合里选自然更准。**RAG 不只省 token，更是帮模型把"该看什么"先筛好。**
+> - 失分自查：别只说"范围小所以更准"（循环论证），要说出机制=噪声/注意力稀释/信噪比。
+
+**Q2：正确编码排第 25 名没进 top-20 会怎样？暴露 RAG 什么风险？怎么缓解？**
+> 会漏——检索没召回的，模型看不到，生成再强也选不出（garbage in garbage out）。**RAG 质量上限被检索的召回率(recall)卡死**；本质是把"模型幻觉"风险部分转移成"检索失败"风险。缓解四层：① 调大 K 提召回(但 K 大又引噪声，是权衡)；② 换更强 embedding / 上 **hybrid search**(向量+关键词，补向量对精确术语的短板)；③ 加 **rerank** 做"粗召回+精排"两段式；④ 医疗兜底靠人工复核，AI 只做辅助。
+
+**Q3：为什么本地跑开源 embedding 而不用云端 API？各有什么利弊？**
+> 起因=智谱 embedding 不在免费额度(报余额不足 1113)。**本地优势**：①成本0 ②零依赖(无key/无网/无配额) ③**数据隐私——病历不出本机，医疗硬需求**。**本地代价**：模型小、召回不如云端大模型(512维bge-small有噪声)、要下模型占内存、有冷启动。**按场景权衡**：数据敏感+要零成本零依赖→本地划算；追求召回再换云端/更大模型，只改 `embedding.ts` 一个文件。
+> - 选型题通用套路：①我选A ②A优势(每条带原因) ③A代价(主动说别藏) ④我这场景A划算 ⑤何时换B。**只夸一边=没权衡=扣分。**
+

@@ -1,6 +1,8 @@
 import { z } from "zod";
 import { llm, LLM_MODEL } from "@/lib/llm";
 import type { Soap } from "@/lib/soap";
+import { prisma } from "@/lib/prisma";
+import { embed, toVectorLiteral } from "@/lib/embedding";
 
 // 存进 Record.icd / 展示用的结构
 export type IcdSuggestion = { code: string; title: string; reason: string };
@@ -8,6 +10,25 @@ export type IcdList = IcdSuggestion[];
 
 // 码表条目（从数据库 IcdCode 表查出来传进来）
 export type IcdCatalogEntry = { code: string; title: string };
+
+// 【RAG 检索】用病历诊断文本做语义检索，返回最相关的 top-K 候选编码。
+// 取代原来的"全表塞 prompt"：先把 queryText 向量化，再用 pgvector 的余弦距离
+// (<=>) 从码表里捞出语义最近的 K 条。码表大了也只喂这 K 条给模型，省 token、更准。
+// 向量列 Prisma 不认，必须走原生 SQL。
+export async function searchIcdCandidates(
+  queryText: string,
+  k = 20,
+): Promise<IcdCatalogEntry[]> {
+  const vec = toVectorLiteral(await embed(queryText));
+  // ${vec}::vector 把文本参数强转成向量；<=> 是余弦距离，升序=最相近在前。
+  return prisma.$queryRaw<IcdCatalogEntry[]>`
+    SELECT code, title
+    FROM "IcdCode"
+    WHERE embedding IS NOT NULL
+    ORDER BY embedding <=> ${vec}::vector
+    LIMIT ${k}
+  `;
+}
 
 // 模型只需返回 code + reason —— title 我们用码表里的【官方名称】，不信模型给的。
 const modelResponseSchema = z.object({

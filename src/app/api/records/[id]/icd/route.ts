@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { auth } from "@/auth";
 import { prisma } from "@/lib/prisma";
-import { generateIcd } from "@/lib/icd";
+import { generateIcd, searchIcdCandidates } from "@/lib/icd";
 
 // POST /api/records/[id]/icd —— 为某条病历生成 ICD 编码推荐并存回
 export async function POST(
@@ -25,10 +25,9 @@ export async function POST(
       return NextResponse.json({ error: "病历不存在" }, { status: 404 });
     }
 
-    // 先从数据库查出权威码表，喂给模型做 grounding（只准从表里选）
-    const catalog = await prisma.icdCode.findMany({
-      select: { code: true, title: true },
-    });
+    // RAG 检索：按诊断(assessment)做语义检索，只取最相关的 top-20 候选，
+    // 而不是全表塞给模型。码表大了也只喂这 20 条 → 省 token、更准。
+    const catalog = await searchIcdCandidates(record.assessment, 20);
 
     // 根据这条病历的 SOAP + 码表生成 ICD 推荐
     const icd = await generateIcd(
