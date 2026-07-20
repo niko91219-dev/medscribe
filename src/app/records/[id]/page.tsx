@@ -4,6 +4,7 @@ import { auth } from "@/auth";
 import { prisma } from "@/lib/prisma";
 import type { IcdList } from "@/lib/icd";
 import IcdSection from "./IcdSection";
+import ExplanationSection from "./ExplanationSection";
 
 // Next.js 16：动态路由的 params 是 Promise，要 await。
 export default async function RecordDetailPage({
@@ -59,6 +60,8 @@ export default async function RecordDetailPage({
         recordId={record.id}
         initialIcd={(record.icd as IcdList | null) ?? null}
       />
+
+      <ExplanationSection recordId={record.id} />
 
       <details className="mt-6">
         <summary className="cursor-pointer text-sm text-black/50">

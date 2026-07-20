@@ -364,3 +364,38 @@ cookie 特性：浏览器对同域请求**自动带上**。方便，但开了口
 > 起因=智谱 embedding 不在免费额度(报余额不足 1113)。**本地优势**：①成本0 ②零依赖(无key/无网/无配额) ③**数据隐私——病历不出本机，医疗硬需求**。**本地代价**：模型小、召回不如云端大模型(512维bge-small有噪声)、要下模型占内存、有冷启动。**按场景权衡**：数据敏感+要零成本零依赖→本地划算；追求召回再换云端/更大模型，只改 `embedding.ts` 一个文件。
 > - 选型题通用套路：①我选A ②A优势(每条带原因) ③A代价(主动说别藏) ④我这场景A划算 ⑤何时换B。**只夸一边=没权衡=扣分。**
 
+## 十、流式输出（患者版病情解释）
+
+新增自由文本功能演示流式打字机（**不改 SOAP/ICD**——它们是 JSON，见下"核心冲突"）。关键文件：`src/lib/explain.ts`、`src/app/api/records/[id]/explain/route.ts`、`src/app/records/[id]/ExplanationSection.tsx`、`page.tsx`。
+
+### 1. 核心冲突：流式 vs 结构化 JSON
+- **流式适合自由文本，不适合结构化 JSON**：JSON 必须**收全**才能 `parse`，收到半截 `{"a":"x` 是坏 JSON。所以 SOAP/ICD（JSON 模式+zod）**不能流式**；新建的"散文解释"才适合。
+- 一句话：**要可靠解析→JSON→不能流式；要打字机→自由文本→不能结构化解析。按需求二选一，不能既要又要。**
+
+### 2. 三段接力（边收边发，全程不攒）
+- **① LLM 层**（`explain.ts`）：`stream:true`（唯一关键差别），返回 async iterable；**不用** `response_format:json_object`；散文无需 zod（不解析、直接展示）。字段是 `delta.content`（增量）不是 `message.content`（完整）。
+- **② 路由层**（二传手）：`new ReadableStream({ start(controller){ for await(chunk of llmStream){ controller.enqueue(encode(delta)) } controller.close() } })` → `return new Response(stream, {"Content-Type":"text/plain"})`。**命门：边收边 enqueue，绝不 `await` 收全再发**（那就退化成非流式了，能跑但流式废了）。
+- **③ 前端**（`ExplanationSection`）：`res.body.getReader()` + `TextDecoder`，循环 `read()`，每块 `acc+=decode(value,{stream:true}); setText(acc)`。**打字机=每块 setState**。对比 `res.json()`（等全部）。
+- `TextDecoder` 的 `{stream:true}`：中文1字占3字节，一块可能从半个字切断，`stream:true` 让 decoder 记住半个字拼下一块，防乱码。
+
+### 3. 鉴权必须在"开流之前"（面试高频）
+- HTTP **状态码在开流那一刻随响应头发出、之后改不了**。若把鉴权放流里：已承诺 200 成功，再发现没权限时**回退不了 401/404**（客户端 `res.ok` 已 true），只能中途 `controller.error` 崩流——契约已说谎。所以校验前置、开流前定死 status。既是正确性也是安全。
+
+### 4. 开流之后的错误只能"带内信号"（进阶，区分深浅）
+- 开流后状态码失效 → **错误/完成状态得靠带内信号(in-band)** 塞进流内容里传（如 SSE 的 `event:error`、或自定义哨兵）。
+- 现有代码的 UX 坑：中途出错只 `controller.error`→前端显示"网络中断"，但**半截内容留屏**（医疗场景漏后半段危险）；更隐蔽的**静默截断**（LLM 提前停不报错）前端当成正常结束。改进：带内发"完成/错误"哨兵让前端能区分，中断时 UI 标"部分内容"+重试。
+- 金句：**"流式错误处理最易被忽视：开流后状态码失效，正确/错误、完成/中断都得靠带内信号，否则客户端分不清'正常收完'和'半路崩了'。"**
+
+### 5. SSE 是啥
+- SSE(Server-Sent Events)=服务端单向推送的**标准格式**（`data: xxx\n\n` + `text/event-stream`）。我们单条纯文本流用**裸 ReadableStream** 更轻，没上 SSE；知道"SSE 是标准协议、单向文本流可用裸流"即可。
+
+## 十一、模拟面试满分答法（流式这条线）
+> 点按钮 → 前端 getReader 逐块读+setState(打字机) → 路由先鉴权(开流前定status)再 ReadableStream 转发 → LLM 层 stream:true 不用 JSON。
+
+**Q1：把鉴权从"开流前"改到"流里"会出什么问题？**
+> HTTP 状态码开流那刻就发出去、改不了。放流里=已承诺 200 成功，再发现没权限时回退不了 401（客户端 res.ok 已 true），只能中途崩流，**契约已说谎、无法正确告知"你无权访问"**。所以鉴权前置。既是正确性也是安全。
+
+**Q2：流开始后 LLM 生成到一半挂了，会怎样？UX 有问题吗？怎么改进？**
+> 现有：`controller.error`→前端显示"网络中断"。**UX 问题**：①半截内容留屏，用户以为就这些(医疗漏后半段危险)；②静默截断时前端当成正常结束、拿残缺内容不自知。**根因=开流后状态码失效**。改进：用**带内信号**发"完成/错误"哨兵让前端区分正常收完 vs 中途崩，中断时 UI 标"部分内容"+重试。
+> - 失分自查：这题问三件事(会怎样/是否UX问题/怎么改)，别只答"会怎样"。
+
