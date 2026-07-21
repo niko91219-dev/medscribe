@@ -86,9 +86,9 @@ model Session {
 model IcdCode {
   code  String @id // ICD-10 编码，本身就是主键
   title String // 官方疾病名称
-  // title 的语义向量（本地 bge-small-zh-v1.5, 512 维），给 RAG 检索用。
+  // title 的语义向量（阿里百炼 text-embedding-v3, 1024 维），给 RAG 检索用。
   // Prisma 没有原生 vector 类型 → 用 Unsupported 占位，读写必须走原生 SQL。
-  embedding Unsupported("vector(512)")?
+  embedding Unsupported("vector(1024)")?
 }
 
 // 邮箱验证 / 找回密码用的一次性 token
