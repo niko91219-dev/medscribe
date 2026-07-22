@@ -35,6 +35,24 @@ const modelResponseSchema = z.object({
   codes: z.array(z.object({ code: z.string(), reason: z.string() })),
 });
 
+// 纯逻辑（无 IO，易单测）：模型返回的 codes → 白名单过滤 + 官方名覆盖。
+// 从 generateIcd 里抽出来，把「纯逻辑」和「调 LLM 的副作用」解耦。
+// 二次校验（防御纵深）：即使 prompt 要求"只从表里选"，模型仍可能违规——
+// 用码表做权威过滤，只保留表里真实存在的 code，并用【官方 title】覆盖模型说法。
+export function reconcileIcd(
+  codes: { code: string; reason: string }[],
+  catalog: IcdCatalogEntry[],
+): IcdList {
+  const titleByCode = new Map(catalog.map((c) => [c.code, c.title]));
+  return codes
+    .filter((c) => titleByCode.has(c.code))
+    .map((c) => ({
+      code: c.code,
+      title: titleByCode.get(c.code)!,
+      reason: c.reason,
+    }));
+}
+
 function buildSystemPrompt(catalog: IcdCatalogEntry[]): string {
   const list = catalog.map((c) => `${c.code} ${c.title}`).join("\n");
   return `你是一名 ICD-10 编码助手。用户会给你一份 SOAP 病历。
@@ -75,14 +93,6 @@ export async function generateIcd(
 
   const { codes } = modelResponseSchema.parse(JSON.parse(content));
 
-  // 二次校验（防御纵深）：即使 prompt 里要求"只从表里选"，模型仍可能违规。
-  // 用码表做权威过滤——只保留表里真实存在的 code，并用【官方 title】覆盖模型说法。
-  const titleByCode = new Map(catalog.map((c) => [c.code, c.title]));
-  return codes
-    .filter((c) => titleByCode.has(c.code))
-    .map((c) => ({
-      code: c.code,
-      title: titleByCode.get(c.code)!,
-      reason: c.reason,
-    }));
+  // 纯逻辑抽到 reconcileIcd，这里只负责「调 LLM + 解析」，职责清晰、也好测。
+  return reconcileIcd(codes, catalog);
 }
